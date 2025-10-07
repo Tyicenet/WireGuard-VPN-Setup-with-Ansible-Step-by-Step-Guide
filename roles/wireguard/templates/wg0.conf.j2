@@ -1,0 +1,8 @@
+[Interface]
+Address = {{ wireguard_server_address }}
+ListenPort = {{ wireguard_port }}
+PrivateKey = {{ server_private_key }}
+MTU = {{ wireguard_server_mtu }}
+SaveConfig = false
+
+# UFW rules manage NAT and forwarding. Client peers are appended below.

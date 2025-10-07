@@ -1,0 +1,11 @@
+---
+- name: Setup WireGuard VPN server and clients
+  hosts: wireguard
+  become: true
+  gather_facts: true
+  vars_prompt:
+    - name: client_count
+      prompt: "How many clients do you want to create?"
+      private: false
+  roles:
+    - wireguard

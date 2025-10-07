@@ -1,0 +1,12 @@
+---
+wireguard_port: 51820
+wireguard_network: 10.10.10.0/24
+wireguard_server_address: 10.10.10.1/24
+wireguard_client_ip_base: 10.10.10
+wireguard_first_client_octet: 2
+wireguard_server_mtu: 1420
+wireguard_client_mtu: 1375
+wireguard_client_dns: 8.8.8.8
+ssh_port: 22
+external_interface: null
+wg_interface: wg0

@@ -1,369 +1,166 @@
-# 🛡️ WireGuard VPN Setup with Ansible (Step-by-Step Guide)
+# 🛡️ WireGuard VPN Setup with Ansible
+
+This project automates the installation of a WireGuard VPN server and the generation of client configurations using Ansible. It keeps the simple layout you have been using while adopting the working flow from [cwilliams001/ansible-wg](https://github.com/cwilliams001/ansible-wg).
 
 ---
 
-> 🧠 Goal: Automatically deploy a WireGuard VPN server and generate client configs using Ansible.
-> 
+## 🧠 What You Get
+
+* A reproducible Ansible playbook (`playbook.yml`) that provisions WireGuard.
+* An inventory file (`inventory.ini`) with a single `[wireguard]` group.
+* A role (`roles/wireguard`) that installs packages, configures UFW, creates keys, and renders server/client configs.
+* Idempotent tasks that only create keys and configs when they are missing, so you can re-run the playbook safely.
 
 ---
 
-## 🖥️ PART 1: Set Up Your Ansible Control VM
+## 🖥️ Part 1 – Prepare Your Ansible Control Node
 
-This is the machine **you** will run Ansible from. It talks to the VPN server over SSH.
+1. Remove any broken global Ansible packages:
+   ```bash
+   sudo apt remove --purge ansible -y
+   sudo apt autoremove -y
+   ```
+
+2. Install Python tooling with `pipx`:
+   ```bash
+   sudo apt update
+   sudo apt install -y pipx python3-venv
+   pipx ensurepath
+   source ~/.bashrc
+   ```
+
+3. Install Ansible the recommended way:
+   ```bash
+   pipx install ansible-core
+   pipx inject ansible-core ansible
+   ```
+
+   Confirm everything works:
+   ```bash
+   ansible-playbook --version
+   ```
+
+   The role depends on the `community.general` collection for the UFW module. If you built a minimal Ansible environment, install it explicitly:
+   ```bash
+   ansible-galaxy collection install community.general
+   ```
 
 ---
 
-### ✅ Step 1. Clean Up Any Old Ansible
+## 🗂️ Part 2 – Project Layout
 
-```bash
-sudo apt remove --purge ansible -y
-sudo apt autoremove -y
+Clone this repository and inspect the important files:
 
 ```
+wireguard-ansible/
+├── inventory.ini
+├── playbook.yml
+└── roles/
+    └── wireguard/
+        ├── defaults/main.yml
+        ├── handlers/main.yml
+        ├── tasks/
+        │   ├── generate_clients.yml
+        │   └── main.yml
+        └── templates/
+            ├── client.conf.j2
+            └── wg0.conf.j2
+```
 
-This removes broken or old versions.
+* `defaults/main.yml` defines sensible defaults (10.10.10.0/24 network, UDP/51820, DNS, MTU, etc.).
+* `tasks/main.yml` installs WireGuard, configures UFW NAT/forwarding, and prepares the server configuration.
+* `tasks/generate_clients.yml` creates individual client keys/configs and ensures the server has matching `[Peer]` entries.
+* Templates render ready-to-import configs for both server and clients.
 
 ---
 
-### ✅ Step 2. Install `pipx` (modern Python tool installer)
+## 🧾 Part 3 – Configure the Inventory
 
-```bash
-sudo apt update
-sudo apt install -y pipx python3-venv
-pipx ensurepath
-source ~/.bashrc
-
-```
-
----
-
-### ✅ Step 3. Install Ansible Correctly
-
-```bash
-pipx install ansible-core
-pipx inject ansible-core ansible
-
-```
-
-This gives you both the Ansible core and the CLI tools like `ansible-playbook`.
-
-Check it's working:
-
-```bash
-ansible-playbook --version
-
-```
-
----
-
-## 🗂️ PART 2: Build the Project Folder
-
-In your home folder (or anywhere you want):
-
-```bash
-mkdir -p wireguard-ansible/roles/wireguard/{tasks,templates,handlers}
-cd wireguard-ansible
-
-```
-
-Now make the needed files:
-
-```bash
-touch inventory.ini playbook.yml
-touch roles/wireguard/tasks/main.yml
-touch roles/wireguard/tasks/generate_clients.yml
-touch roles/wireguard/templates/wg0.conf.j2
-touch roles/wireguard/templates/client.conf.j2
-touch roles/wireguard/handlers/main.yml
-
-```
-
----
-
-## 🧾 PART 3: Add Content to Files
-
-### 📁 `inventory.ini`
+Edit `inventory.ini` and set the public IP/DNS of your WireGuard host. Example:
 
 ```
 [wireguard]
-your.server.ip.address ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
-
+wireguard ansible_host=203.0.113.10 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
 ```
 
-Replace `your.server.ip.address` with the actual IP of the VPN server.
-
----
-
-### 📜 `playbook.yml`
-
-```yaml
-- name: Setup WireGuard VPN Server
-  hosts: wireguard
-  gather_facts: yes
-  vars_prompt:
-    - name: client_count
-      prompt: "How many clients do you want to create?"
-      private: no
-  roles:
-    - wireguard
-
-```
-
----
-
-### 🔧 `roles/wireguard/tasks/main.yml`
-
-```yaml
-- name: Install dependencies
-  apt:
-    name:
-      - wireguard
-      - wireguard-tools
-      - ufw
-      - qrencode
-    update_cache: yes
-
-- name: Enable IP forwarding
-  lineinfile:
-    path: /etc/sysctl.conf
-    regexp: '^#?net.ipv4.ip_forward'
-    line: 'net.ipv4.ip_forward = 1'
-  notify: Reload sysctl
-
-- name: Ensure /etc/wireguard exists
-  file:
-    path: /etc/wireguard
-    state: directory
-    mode: '0700'
-
-- name: Generate server private key
-  command: wg genkey
-  register: server_private_key
-  changed_when: false
-
-- name: Generate server public key
-  shell: "echo '{{ server_private_key.stdout }}' | wg pubkey"
-  register: server_public_key_raw
-  changed_when: false
-
-- name: Set server key facts
-  set_fact:
-    server_private_key: "{{ server_private_key.stdout }}"
-    server_public_key: "{{ server_public_key_raw.stdout }}"
-
-- name: Generate server config
-  template:
-    src: wg0.conf.j2
-    dest: /etc/wireguard/wg0.conf
-    mode: '0600'
-
-- name: Enable wg0 on boot
-  systemd:
-    name: wg-quick@wg0
-    enabled: yes
-
-- name: Start WireGuard
-  systemd:
-    name: wg-quick@wg0
-    state: started
-
-- name: Generate clients
-  include_tasks: generate_clients.yml
-  loop: "{{ range(1, client_count | int + 1) | list }}"
-  loop_control:
-    loop_var: i
-
-```
-
----
-
-### 🔄 `roles/wireguard/tasks/generate_clients.yml`
-
-```yaml
-- name: Create clients directory
-  file:
-    path: "/etc/wireguard/clients"
-    state: directory
-    mode: '0700'
-
-- name: Generate client private key
-  command: wg genkey
-  register: client_private_key
-  changed_when: false
-
-- name: Generate client public key
-  shell: "echo '{{ client_private_key.stdout }}' | wg pubkey"
-  register: client_public_key
-  changed_when: false
-
-- name: Set client facts
-  set_fact:
-    client_key: "{{ client_private_key.stdout }}"
-    client_pub: "{{ client_public_key.stdout }}"
-    server_pub: "{{ server_public_key }}"
-    client_ip: "10.10.10.{{ i + 1 }}"
-
-- name: Create client config
-  template:
-    src: client.conf.j2
-    dest: "/etc/wireguard/clients/client{{ i }}.conf"
-    mode: '0600'
-
-- name: Add client to server config
-  blockinfile:
-    path: /etc/wireguard/wg0.conf
-    block: |
-      [Peer]
-      PublicKey = {{ client_pub }}
-      AllowedIPs = {{ client_ip }}/32
-    marker: "# {mark} client {{ i }}"
-    insertafter: EOF
-
-- name: Restart WireGuard
-  systemd:
-    name: wg-quick@wg0
-    state: restarted
-
-```
-
----
-
-### 📄 `roles/wireguard/templates/wg0.conf.j2`
-
-```
-[Interface]
-Address = 10.10.10.1/24
-ListenPort = 51820
-PrivateKey = {{ server_private_key }}
-MTU = 1420
-SaveConfig = false
-
-```
-
----
-
-### 📄 `roles/wireguard/templates/client.conf.j2`
-
-```
-[Interface]
-PrivateKey = {{ client_key }}
-Address = {{ client_ip }}/32
-DNS = 8.8.8.8
-MTU = 1375
-
-[Peer]
-PublicKey = {{ server_pub }}
-Endpoint = {{ ansible_host }}:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-
-```
-
----
-
-### 🔁 `roles/wireguard/handlers/main.yml`
-
-```yaml
-- name: Reload sysctl
-  command: sysctl -p
-
-```
-
----
-
-## 🔐 PART 4: SSH Access
-
-### If you already SSH with a key:
-
-You're good! Ansible uses the same key.
-
----
-
-### If you only use a password:
-
-Generate a key:
+If you SSH with a password, create and deploy a key first:
 
 ```bash
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-
-```
-
-Then copy it to the server:
-
-```bash
-ssh-copy-id root@your_server_ip
-
-```
-
-Now test it:
-
-```bash
-ssh root@your_server_ip
-
+ssh-copy-id root@203.0.113.10
 ```
 
 ---
 
-## ▶️ PART 5: Run the Playbook
+## ⚙️ Part 4 – Customize Variables (Optional)
+
+Adjust defaults in `roles/wireguard/defaults/main.yml` or override them per host/group. Important options:
+
+* `wireguard_network`: CIDR of the VPN network.
+* `wireguard_server_address`: Address of the server inside the VPN network.
+* `wireguard_port`: UDP port exposed on the server.
+* `external_interface`: Public-facing network interface; auto-detected but override if your server has multiple NICs.
+* `wg_interface`: WireGuard interface name (defaults to `wg0`).
+* `wireguard_client_ip_base` & `wireguard_first_client_octet`: Control how client IPs are generated when you answer the prompt.
+* `wireguard_endpoint`: Set this to a DNS name if it differs from the `ansible_host`.
+
+---
+
+## ▶️ Part 5 – Run the Playbook
+
+From the project directory:
 
 ```bash
-cd wireguard-ansible
 ansible-playbook -i inventory.ini playbook.yml
-
 ```
 
-It will ask:
+You will be asked:
 
 ```
-How many clients do you want to create?:
-
+How many clients do you want to create?
 ```
 
-Enter a number (like 2, 5, etc.), and it will do the rest.
+Enter any positive number. Each client gets:
+
+* Keys stored on the server in `/etc/wireguard/clients`.
+* A config file `/etc/wireguard/clients/clientX.conf`.
+* A matching `[Peer]` section appended to `/etc/wireguard/wg0.conf`.
+
+The role is idempotent: re-running with the same `client_count` preserves existing keys/configs while ensuring the server state is correct.
 
 ---
 
-## 🧾 PART 6: View/Export Client Configs
+## 📦 Part 6 – Retrieve Client Configs
 
-### SSH into server to view:
+* Show a config directly on the server:
+  ```bash
+  ssh root@203.0.113.10
+  cat /etc/wireguard/clients/client1.conf
+  ```
 
-```bash
-ssh root@your_server_ip
-cat /etc/wireguard/clients/client1.conf
+* Copy it to your workstation:
+  ```bash
+  scp root@203.0.113.10:/etc/wireguard/clients/client1.conf ~/Desktop/
+  ```
 
-```
+* Generate a QR code for mobile clients:
+  ```bash
+  qrencode -t ansiutf8 < /etc/wireguard/clients/client1.conf
+  qrencode -t PNG -o /etc/wireguard/clients/client1.png < /etc/wireguard/clients/client1.conf
+  ```
 
 ---
 
-### Or copy to your own computer:
+## 🔍 Useful WireGuard Commands
 
 ```bash
-scp root@your_server_ip:/etc/wireguard/clients/client1.conf ~/Desktop/
-
+sudo systemctl status wg-quick@wg0
+sudo systemctl restart wg-quick@wg0
+sudo wg show
 ```
-
----
-
-## 📱 Bonus: Create a QR Code for Phones
-
-Run this on the server:
-
-```bash
-qrencode -t ansiutf8 < /etc/wireguard/clients/client1.conf
-
-```
-
-Or save it as an image:
-
-```bash
-qrencode -t PNG -o /etc/wireguard/clients/client1.png < /etc/wireguard/clients/client1.conf
-
-```
-
-Scan with the WireGuard mobile app and you're good to go.
 
 ---
 
 ## ✅ Done!
 
-You now have a fully working WireGuard VPN server and auto-generated clients, all set up with Ansible.
+You now have a tested WireGuard automation workflow. Re-run the playbook whenever you need to add more clients or tweak firewall settings—the role will keep your server configuration tidy and consistent.

@@ -1,0 +1,11 @@
+---
+- name: Reload sysctl
+  ansible.builtin.command: sysctl -p
+
+- name: Reload UFW
+  ansible.builtin.command: ufw reload
+
+- name: Restart WireGuard
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}"
+    state: restarted

@@ -1,0 +1,139 @@
+---
+- name: Install WireGuard and supporting packages
+  ansible.builtin.apt:
+    name:
+      - wireguard
+      - wireguard-tools
+      - ufw
+      - qrencode
+    state: present
+    update_cache: true
+
+- name: Enable IPv4 forwarding
+  ansible.builtin.lineinfile:
+    path: /etc/sysctl.conf
+    regexp: '^#?net\.ipv4\.ip_forward'
+    line: 'net.ipv4.ip_forward = 1'
+  notify: Reload sysctl
+
+- name: Determine interfaces
+  ansible.builtin.set_fact:
+    external_interface: "{{ external_interface | default(ansible_default_ipv4.interface, true) }}"
+    wg_interface: "{{ wg_interface | default('wg0', true) }}"
+
+- name: Ensure UFW base file exists without overwriting custom rules
+  ansible.builtin.copy:
+    dest: /etc/ufw/before.rules
+    content: |
+      # rules.before seeded by Ansible to allow NAT/forward blocks
+      *filter
+      :ufw-before-input - [0:0]
+      :ufw-before-output - [0:0]
+      :ufw-before-forward - [0:0]
+      COMMIT
+    force: false
+    mode: '0644'
+
+- name: Ensure WireGuard NAT rules are present
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    marker: "# {mark} wireguard-nat"
+    insertafter: BOF
+    block: |
+      *nat
+      :POSTROUTING ACCEPT [0:0]
+      -A POSTROUTING -s {{ wireguard_network }} -o {{ external_interface }} -j MASQUERADE
+      COMMIT
+  notify: Reload UFW
+
+- name: Allow forwarding between external and WireGuard interfaces
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    marker: "# {mark} wireguard-forward"
+    insertafter: '^:ufw-before-forward'
+    block: |
+      -A ufw-before-forward -i {{ external_interface }} -o {{ wg_interface }} -m state --state RELATED,ESTABLISHED -j ACCEPT
+      -A ufw-before-forward -i {{ wg_interface }} -o {{ external_interface }} -j ACCEPT
+  notify: Reload UFW
+
+- name: Allow SSH through UFW
+  community.general.ufw:
+    rule: allow
+    port: "{{ ssh_port }}"
+    proto: tcp
+
+- name: Allow WireGuard UDP through UFW
+  community.general.ufw:
+    rule: allow
+    port: "{{ wireguard_port }}"
+    proto: udp
+
+- name: Enable UFW deny incoming policy
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+
+- name: Ensure UFW outgoing policy allows traffic
+  community.general.ufw:
+    state: enabled
+    policy: allow
+    direction: outgoing
+
+- name: Ensure WireGuard configuration directory exists
+  ansible.builtin.file:
+    path: /etc/wireguard
+    state: directory
+    mode: '0700'
+
+- name: Generate server private key if missing
+  ansible.builtin.shell: |
+    umask 077
+    wg genkey | tee /etc/wireguard/server_private.key
+  args:
+    creates: /etc/wireguard/server_private.key
+
+- name: Generate server public key if missing
+  ansible.builtin.shell: |
+    umask 077
+    cat /etc/wireguard/server_private.key | wg pubkey | tee /etc/wireguard/server_public.key
+  args:
+    creates: /etc/wireguard/server_public.key
+
+- name: Read server private key
+  ansible.builtin.slurp:
+    path: /etc/wireguard/server_private.key
+  register: server_private_key_file
+
+- name: Read server public key
+  ansible.builtin.slurp:
+    path: /etc/wireguard/server_public.key
+  register: server_public_key_file
+
+- name: Set server key facts
+  ansible.builtin.set_fact:
+    server_private_key: "{{ server_private_key_file.content | b64decode | trim }}"
+    server_public_key: "{{ server_public_key_file.content | b64decode | trim }}"
+
+- name: Deploy server configuration
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: /etc/wireguard/{{ wg_interface }}.conf
+    mode: '0600'
+  notify: Restart WireGuard
+
+- name: Enable WireGuard service on boot
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}"
+    enabled: true
+
+- name: Ensure WireGuard service is running
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}"
+    state: started
+
+- name: Generate client configurations
+  ansible.builtin.include_tasks: generate_clients.yml
+  loop: "{{ range(1, (client_count | int) + 1) | list }}"
+  loop_control:
+    loop_var: i

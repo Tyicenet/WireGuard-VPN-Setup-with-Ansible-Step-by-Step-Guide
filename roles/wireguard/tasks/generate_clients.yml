@@ -1,0 +1,64 @@
+---
+- name: Set client name
+  ansible.builtin.set_fact:
+    client_name: "client{{ i }}"
+    client_ip: "{{ wireguard_client_ip_base }}.{{ wireguard_first_client_octet + i - 1 }}"
+
+- name: Ensure clients directory exists
+  ansible.builtin.file:
+    path: /etc/wireguard/clients
+    state: directory
+    mode: '0700'
+
+- name: Check if client configuration already exists
+  ansible.builtin.stat:
+    path: "/etc/wireguard/clients/{{ client_name }}.conf"
+  register: client_conf_stat
+
+- name: Generate client private key when missing
+  ansible.builtin.shell: |
+    umask 077
+    wg genkey | tee /etc/wireguard/clients/{{ client_name }}.key
+  args:
+    creates: "/etc/wireguard/clients/{{ client_name }}.key"
+  when: not client_conf_stat.stat.exists
+
+- name: Generate client public key when missing
+  ansible.builtin.shell: |
+    umask 077
+    cat /etc/wireguard/clients/{{ client_name }}.key | wg pubkey | tee /etc/wireguard/clients/{{ client_name }}.pub
+  args:
+    creates: "/etc/wireguard/clients/{{ client_name }}.pub"
+  when: not client_conf_stat.stat.exists
+
+- name: Read client private key
+  ansible.builtin.slurp:
+    path: "/etc/wireguard/clients/{{ client_name }}.key"
+  register: client_private_key_file
+
+- name: Read client public key
+  ansible.builtin.slurp:
+    path: "/etc/wireguard/clients/{{ client_name }}.pub"
+  register: client_public_key_file
+
+- name: Render client configuration
+  ansible.builtin.template:
+    src: client.conf.j2
+    dest: "/etc/wireguard/clients/{{ client_name }}.conf"
+    mode: '0600'
+  vars:
+    client_key: "{{ client_private_key_file.content | b64decode | trim }}"
+    client_pub: "{{ client_public_key_file.content | b64decode | trim }}"
+    client_ip: "{{ client_ip }}"
+    server_pub: "{{ server_public_key }}"
+  notify: Restart WireGuard
+
+- name: Ensure client is present in server configuration
+  ansible.builtin.blockinfile:
+    path: /etc/wireguard/{{ wg_interface }}.conf
+    marker: "# {mark} {{ client_name }}"
+    block: |
+      [Peer]
+      PublicKey = {{ client_public_key_file.content | b64decode | trim }}
+      AllowedIPs = {{ client_ip }}/32
+  notify: Restart WireGuard
