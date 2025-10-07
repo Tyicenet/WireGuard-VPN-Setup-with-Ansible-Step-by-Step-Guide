@@ -5,4 +5,7 @@ PrivateKey = {{ server_private_key }}
 MTU = {{ wireguard_server_mtu }}
 SaveConfig = false
 
-# UFW rules manage NAT and forwarding. Client peers are appended below.
+PostUp = iptables -A FORWARD -i {{ wg_interface }} -j ACCEPT; iptables -A FORWARD -o {{ wg_interface }} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{ external_interface | default('eth0') }} -j MASQUERADE
+PostDown = iptables -D FORWARD -i {{ wg_interface }} -j ACCEPT; iptables -D FORWARD -o {{ wg_interface }} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{ external_interface | default('eth0') }} -j MASQUERADE
+
+# Client peers are appended below.
