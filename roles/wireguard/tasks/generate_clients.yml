@@ -31,6 +31,16 @@
     creates: "/etc/wireguard/clients/{{ client_name }}.pub"
   when: not client_conf_stat.stat.exists
 
+- name: Generate client preshared key when missing
+  ansible.builtin.shell: |
+    umask 077
+    wg genpsk | tee /etc/wireguard/clients/{{ client_name }}.psk
+  args:
+    creates: "/etc/wireguard/clients/{{ client_name }}.psk"
+  when:
+    - wireguard_generate_preshared_keys | default(true)
+    - not client_conf_stat.stat.exists
+
 - name: Read client private key
   ansible.builtin.slurp:
     path: "/etc/wireguard/clients/{{ client_name }}.key"
@@ -40,6 +50,12 @@
   ansible.builtin.slurp:
     path: "/etc/wireguard/clients/{{ client_name }}.pub"
   register: client_public_key_file
+
+- name: Read client preshared key
+  ansible.builtin.slurp:
+    path: "/etc/wireguard/clients/{{ client_name }}.psk"
+  register: client_preshared_key_file
+  when: wireguard_generate_preshared_keys | default(true)
 
 - name: Render client configuration
   ansible.builtin.template:
@@ -51,6 +67,7 @@
     client_pub: "{{ client_public_key_file.content | b64decode | trim }}"
     client_ip: "{{ client_ip }}"
     server_pub: "{{ server_public_key }}"
+    client_preshared_key: "{{ client_preshared_key_file.content | default('') | b64decode | trim }}"
   notify: Restart WireGuard
 
 - name: Ensure client is present in server configuration
@@ -60,5 +77,8 @@
     block: |
       [Peer]
       PublicKey = {{ client_public_key_file.content | b64decode | trim }}
+      {% if wireguard_generate_preshared_keys | default(true) %}
+      PresharedKey = {{ client_preshared_key_file.content | b64decode | trim }}
+      {% endif %}
       AllowedIPs = {{ client_ip }}/32
   notify: Restart WireGuard

@@ -6,7 +6,9 @@ wireguard_client_ip_base: 10.10.10
 wireguard_first_client_octet: 2
 wireguard_server_mtu: 1420
 wireguard_client_mtu: 1375
-wireguard_client_dns: 8.8.8.8
+wireguard_client_dns: 1.1.1.1, 1.0.0.1
+wireguard_client_allowed_ips: "0.0.0.0/0, ::/0, {{ wireguard_network }}"
+wireguard_generate_preshared_keys: true
 ssh_port: 22
 external_interface: null
 wg_interface: wg0

@@ -6,6 +6,9 @@ MTU = {{ wireguard_client_mtu }}
 
 [Peer]
 PublicKey = {{ server_pub }}
+{% if client_preshared_key %}
+PresharedKey = {{ client_preshared_key }}
+{% endif %}
 Endpoint = {{ (wireguard_endpoint | default(ansible_host)) }}:{{ wireguard_port }}
-AllowedIPs = {{ wireguard_network }}
+AllowedIPs = {{ wireguard_client_allowed_ips }}
 PersistentKeepalive = 25
